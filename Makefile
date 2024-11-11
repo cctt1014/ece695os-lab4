@@ -1,28 +1,21 @@
-# Input arguments for one-level
-TEST_IDX=0
 
+.PHONY: fdisk run_fdisk build_os clean print
 
-.PHONY: one two fork run_one run_two run_fork clean
+fdisk: build_os
+	cd flat/apps/fdisk; make
 
-one:
-	cd one-level; make
+run_fdisk: 
+	cd flat/apps/fdisk; make run 
 
-two:
-	cd two-level; make
+build_os:
+	cd flat/os; make
 
-fork:
-	cd fork; make
+print:
+	cd flat/scripts; ./blockprint 0 52 /tmp/ece695tc.img
 
-run_one:
-	cd one-level; make run TEST_IDX=${TEST_IDX}
-
-run_two:
-	cd two-level; make run TEST_IDX=${TEST_IDX}
-
-run_fork:
-	cd fork; make run TEST_IDX=${TEST_IDX}
+# run_fork:
+# 	cd fork; make run TEST_IDX=${TEST_IDX}
 
 clean:
-	cd one-level; make clean
-	cd two-level; make clean
-	cd fork; make clean
+	cd flat/apps/fdisk; make clean
+	cd flat/os; make clean

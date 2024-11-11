@@ -6,7 +6,7 @@
 #include "dfs.h"
 #include "synch.h"
 
-//static dfs_inode inodes[/*specify size*/ ]; // all inodes
+static dfs_inode inodes[DFS_INODE_MAX_VIRTUAL_BLOCKNUM]; // all inodes
 //static dfs_superblock sb; // superblock
 //static uint32 fbv[/*specify size*/]; // Free block vector
 

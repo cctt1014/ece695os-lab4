@@ -1,4 +1,4 @@
-#! /usr/local/bin/bash
+#! /usr/bin/bash
 
 # This program prints a hex dump of a given file in 512-byte blocks at the
 # given block number
