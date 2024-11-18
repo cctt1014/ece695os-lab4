@@ -5,6 +5,7 @@ typedef struct dfs_superblock {
   // STUDENT: put superblock internals here
   int valid; // valid indicator for the file system
   int fs_blk_size;
+  int disk_blk_size;
   int total_num_fs_block;
   int inode_fs_blk_idx;
   int num_inodes;
@@ -42,7 +43,7 @@ typedef struct dfs_inode {
 #define DFS_MAX_NUM_BLOCKS (DFS_MAX_FILESYSTEM_SIZE / DFS_BLOCKSIZE)
 
 
-// #define DFS_BITS_PER_BYTE 
+#define DFS_BITS_PER_BYTE 8
 #define DFS_FBV_BITS_PER_ENTRY 32
 #define DFS_FBV_MAX_NUM_WORDS (DFS_MAX_NUM_BLOCKS / DFS_FBV_BITS_PER_ENTRY)
 

@@ -35,10 +35,11 @@ void main (int argc, char *argv[])
   disksize = disk_size();
   diskblocksize = disk_blocksize();
   sb.total_num_fs_block = DFS_MAX_NUM_BLOCKS;
-  sb.inode_fs_blk_idx = FDISK_INODE_BLOCK_START;
-  sb.fbv_fs_blk_idx = FDISK_FBV_BLOCK_START;
-  sb.fs_blk_size = DFS_BLOCKSIZE;
-  sb.num_inodes = DFS_INODE_MAX_NUM;
+  sb.inode_fs_blk_idx   = FDISK_INODE_BLOCK_START;
+  sb.fbv_fs_blk_idx     = FDISK_FBV_BLOCK_START;
+  sb.fs_blk_size        = DFS_BLOCKSIZE;
+  sb.disk_blk_size      = diskblocksize;
+  sb.num_inodes         = DFS_INODE_MAX_NUM;
   
   Printf("fdisk (%d): DBG - disksize=%x, diskblocksize=%d\n", getpid(), disksize, diskblocksize);
 
