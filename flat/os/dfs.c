@@ -567,7 +567,11 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
 
   curr_total_bytes = 0;
   for (i = start_blk; i < end_blk; i++) {
-    fsblknum = DfsInodeTranslateVirtualToFilesys(handle, start_blk+i);
+    
+    fsblknum = DfsInodeTranslateVirtualToFilesys(handle, i);
+    if (fsblknum == DFS_FAIL) { 
+      fsblknum = DfsInodeAllocateVirtualBlock(handle, i);
+    }
     
     if (i == start_blk) {
       if (start_offset != 0) {
@@ -742,7 +746,7 @@ uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 vblknum) {
     if (vblknum < DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS) {
       // direct
       if (inodes[handle].direct[vblknum] == 0) {
-        printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Direct pointer is not allocated\n", GetCurrentPid());
+        // printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Direct pointer is not allocated\n", GetCurrentPid());
         return DFS_FAIL;
       }
 
@@ -751,7 +755,7 @@ uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 vblknum) {
     } else if (vblknum < (DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS + (sb.fs_blk_size/4))) {
       // indirect
       if (inodes[handle].indirect == 0) {
-        printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Indirect pointer is not allocated\n", GetCurrentPid());
+        // printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Indirect pointer is not allocated\n", GetCurrentPid());
         return DFS_FAIL;
       }
 
@@ -763,7 +767,7 @@ uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 vblknum) {
     } else {
       // double indirect - assume MAX virtual block number is within the range of double indirect
       if (inodes[handle].double_indirect == 0) {
-        printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Double indirect lvl1 pointer is not allocated\n", GetCurrentPid());
+        // printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Double indirect lvl1 pointer is not allocated\n", GetCurrentPid());
         return DFS_FAIL;
       }
 
@@ -773,7 +777,7 @@ uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 vblknum) {
       lvl1_offset /= (sb.fs_blk_size/4); // find the pointer pointing to the specific lvl2 block
 
       if (*(lvl1_ptr+lvl1_offset) == 0) {
-        printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Double indirect lvl2 pointer is not allocated\n", GetCurrentPid());
+        // printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Double indirect lvl2 pointer is not allocated\n", GetCurrentPid());
         return DFS_FAIL;
       }
 
