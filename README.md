@@ -58,5 +58,4 @@ TEST_IDX options:
 ```
 
 # References
-1. https://github.com/sgianelli/DLXOS-Virtual-Memory-Project
-2. http://electro.fisica.unlp.edu.ar/arq/downloads/Software/WinDLX/dlxarch.shtml
+1. https://github.com/ckv123/Operating-System/tree/master/lab5

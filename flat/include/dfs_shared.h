@@ -34,9 +34,9 @@ typedef struct dfs_inode {
   int inuse; // 4B
   int file_size; // 4B
   char fname[DFS_INODE_MAX_FILENAME_LENGTH];
-  uint32* direct[DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS]; // 4*10 = 40B
-  uint32* indirect; // 4B
-  uint32* double_indirect; // 4B
+  uint32 direct[DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS]; // 4*10 = 40B
+  uint32 indirect; // 4B
+  uint32 double_indirect; // 4B
 } dfs_inode;
 
 #define DFS_MAX_FILESYSTEM_SIZE 0x4000000  // 64MB 

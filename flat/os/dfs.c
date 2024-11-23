@@ -315,6 +315,24 @@ int DfsWriteBlock(uint32 blocknum, dfs_block *b){
 ////////////////////////////////////////////////////////////////////////////////
 // Inode-based functions
 ////////////////////////////////////////////////////////////////////////////////
+//-----------------------------------------------------------------
+// CompareTwoString compares 2 char strings. It returns DFS_SUCCESS  
+// if they are identical, returns DFS_FAIL if they are not.
+//-----------------------------------------------------------------
+
+int DfsCompareTwoString(char* str1, char* str2) {
+  int i;
+
+  i = 0;
+  while (str1[i] == str2[i]) {
+    if (str1[i] == '\0') {
+      return DFS_SUCCESS;
+    }
+    i++;
+  }
+
+  return DFS_FAIL;
+}
 
 //-----------------------------------------------------------------
 // DfsInodeFilenameExists looks through all the inuse inodes for 
@@ -323,7 +341,24 @@ int DfsWriteBlock(uint32 blocknum, dfs_block *b){
 //-----------------------------------------------------------------
 
 uint32 DfsInodeFilenameExists(char *filename) {
+  int i;
 
+  if (sb.valid == 0) {
+    printf("DfsInodeFilenameExists (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
+
+  for (i = 0; i < DFS_INODE_MAX_VIRTUAL_BLOCKNUM; i++) {
+    LockHandleAcquire(inode_lock);
+    if ((inodes[i].inuse == 1) && (DfsCompareTwoString(inodes[i].fname, filename) == DFS_SUCCESS)) {
+      LockHandleRelease(inode_lock);
+      return (uint32) i;
+    }
+    LockHandleRelease(inode_lock);
+  }
+
+  // printf("DfsInodeFilenameExists (%d): Input filename %s does not exist\n", GetCurrentPid(), filename);
+  return DFS_FAIL;
 }
 
 
@@ -336,8 +371,38 @@ uint32 DfsInodeFilenameExists(char *filename) {
 //-----------------------------------------------------------------
 
 uint32 DfsInodeOpen(char *filename) {
+  int i;
+  uint32 inode_idx;
 
+  if (sb.valid == 0) {
+    printf("DfsInodeOpen (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
+
+  inode_idx = DfsInodeFilenameExists(filename);
+
+  // return handle if the filename exists
+  if (inode_idx != DFS_FAIL)
+    return inode_idx;
+
+  // find available inode
+  for (i = 0; i < DFS_INODE_MAX_VIRTUAL_BLOCKNUM; i++) {
+    LockHandleAcquire(inode_lock);
+    if (inodes[i].inuse == 0) {
+      dstrncpy(inodes[i].fname, filename, sizeof(inodes[i].fname));
+      inodes[i].inuse = 1;
+      LockHandleRelease(inode_lock);
+      return i;
+    }
+    LockHandleRelease(inode_lock);
+  }
+
+  printf("DfsInodeOpen (%d): ERROR - Failed to allocate an inode\n", GetCurrentPid());
+  return DFS_FAIL;
 }
+
+
+
 
 
 //-----------------------------------------------------------------
@@ -349,6 +414,62 @@ uint32 DfsInodeOpen(char *filename) {
 //-----------------------------------------------------------------
 
 int DfsInodeDelete(uint32 handle) {
+  int i, j;
+  dfs_block fblk_lvl1, fblk_lvl2;
+  uint32 *blknum_lvl1_ptr, *blknum_lvl2_ptr;
+
+  if (sb.valid == 0) {
+    printf("DfsInodeDelete (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
+
+  LockHandleAcquire(inode_lock);
+  if (inodes[handle].inuse == 0) {
+    printf("DfsInodeDelete (%d): ERROR - This node is currently not in use\n", GetCurrentPid());
+    LockHandleRelease(inode_lock);
+    return DFS_FAIL;
+  } else {
+    // Free direct blocks
+    for (i = 0; i < DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS; i++) {
+      if (inodes[handle].direct[i] != 0) {
+        DfsFreeBlock(inodes[handle].direct[i]);
+      }
+    }
+
+    // Free indirect blocks
+    if (inodes[handle].indirect != 0) {
+      DfsReadBlock(inodes[handle].indirect, &fblk_lvl1);
+      blknum_lvl1_ptr = (uint32*) fblk_lvl1.data;
+      for (i = 0; i < (sb.fs_blk_size/4); i++) {
+        if (*(blknum_lvl1_ptr+i) != 0) {
+          DfsFreeBlock(*(blknum_lvl1_ptr+i));
+        }
+      }
+    }
+
+    // Free double-indirect blocks
+    if (inodes[handle].double_indirect != 0) {
+      DfsReadBlock(inodes[handle].double_indirect, &fblk_lvl1); // 1st lvl address blk
+      blknum_lvl1_ptr = (uint32*) fblk_lvl1.data;
+      for (i = 0; i < (sb.fs_blk_size/4); i++) {
+        if (*(blknum_lvl1_ptr+i) != 0) {
+          DfsReadBlock(*(blknum_lvl1_ptr+i), &fblk_lvl2); // 2nd lvl address blk
+          blknum_lvl2_ptr = (uint32*) fblk_lvl2.data;
+          for (j = 0; j < (sb.fs_blk_size/4); j++) {
+            if (*(blknum_lvl2_ptr+j) != 0) {
+              DfsFreeBlock(*(blknum_lvl2_ptr+j));
+            }
+          }
+        }
+      }
+    }
+
+    // Clear the inode
+    bzero((char*)&inodes[handle], sizeof(inodes[handle]));
+  }
+  LockHandleRelease(inode_lock);
+
+  return DFS_SUCCESS;
 
 }
 
@@ -361,7 +482,55 @@ int DfsInodeDelete(uint32 handle) {
 //-----------------------------------------------------------------
 
 int DfsInodeReadBytes(uint32 handle, void *mem, int start_byte, int num_bytes) {
+  int i;
+  uint32 start_blk, end_blk; // virtual blk index
+  uint32 start_offset, end_offset;
+  uint32 fsblknum;
+  uint32 curr_total_bytes;
+  dfs_block fsblk;
 
+  if (sb.valid == 0) {
+    printf("DfsInodeReadBytes (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
+
+  start_blk = start_byte / sb.fs_blk_size;
+  start_offset = start_byte % sb.fs_blk_size;
+  end_blk = (start_byte+num_bytes) / sb.fs_blk_size;
+  end_offset = (start_byte+num_bytes) % sb.fs_blk_size;
+
+  if (end_offset != 0) {
+    end_blk++;
+  }
+
+  curr_total_bytes = 0;
+  for (i = start_blk; i < end_blk; i++) {
+    fsblknum = DfsInodeTranslateVirtualToFilesys(handle, start_blk+i);
+    DfsReadBlock(fsblknum, &fsblk);
+    
+    if (i == start_blk) {
+      bcopy(&fsblk.data[start_offset], (char*) mem, (sb.fs_blk_size - start_offset));
+      curr_total_bytes += sb.fs_blk_size - start_offset;
+
+    } else if (i == (end_blk-1)) {
+      if (end_offset == 0) {
+        end_offset = sb.fs_blk_size;
+      }
+      bcopy(fsblk.data, ((char*)mem) + curr_total_bytes, end_offset);
+      curr_total_bytes += end_offset;
+
+    } else {
+      bcopy(fsblk.data, ((char*)mem) + curr_total_bytes, sb.fs_blk_size);
+      curr_total_bytes += sb.fs_blk_size;
+
+    }
+  }
+
+  if (curr_total_bytes != num_bytes) {
+    printf("DfsInodeReadBytes (%d): ERROR - Requested %d bytes but actually read %d bytes\n", GetCurrentPid(), num_bytes, curr_total_bytes);
+    return DFS_FAIL;
+  }
+  return curr_total_bytes;
 }
 
 
@@ -375,8 +544,65 @@ int DfsInodeReadBytes(uint32 handle, void *mem, int start_byte, int num_bytes) {
 //-----------------------------------------------------------------
 
 int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) {
+  int i;
+  uint32 start_blk, end_blk; // virtual blk index
+  uint32 start_offset, end_offset;
+  uint32 fsblknum;
+  uint32 curr_total_bytes;
+  dfs_block fsblk;
 
+  if (sb.valid == 0) {
+    printf("DfsInodeWriteBytes (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
 
+  start_blk = start_byte / sb.fs_blk_size;
+  start_offset = start_byte % sb.fs_blk_size;
+  end_blk = (start_byte+num_bytes) / sb.fs_blk_size;
+  end_offset = (start_byte+num_bytes) % sb.fs_blk_size;
+  
+  if (end_offset != 0) {
+    end_blk++;
+  }
+
+  curr_total_bytes = 0;
+  for (i = start_blk; i < end_blk; i++) {
+    fsblknum = DfsInodeTranslateVirtualToFilesys(handle, start_blk+i);
+    
+    if (i == start_blk) {
+      if (start_offset != 0) {
+        DfsReadBlock(fsblknum, &fsblk);
+      }
+      bcopy((char*) mem, &fsblk.data[start_offset], (sb.fs_blk_size - start_offset));
+      curr_total_bytes += sb.fs_blk_size - start_offset;
+
+    } else if (i == (end_blk-1)) {
+      if (end_offset != 0) {
+        DfsReadBlock(fsblknum, &fsblk);
+      } else {
+        end_offset = sb.fs_blk_size;
+      }
+      bcopy(((char*)mem) + curr_total_bytes, fsblk.data, end_offset);
+      curr_total_bytes += end_offset;
+
+    } else {
+      bcopy(((char*)mem) + curr_total_bytes, fsblk.data, sb.fs_blk_size);
+      curr_total_bytes += sb.fs_blk_size;
+
+    }
+
+    DfsWriteBlock(fsblknum, &fsblk);
+  }
+
+  if (curr_total_bytes != num_bytes) {
+    printf("DfsInodeWriteBytes (%d): ERROR - Requested %d bytes but actually write %d bytes\n", GetCurrentPid(), num_bytes, curr_total_bytes);
+    return DFS_FAIL;
+  }
+
+  LockHandleAcquire(inode_lock);
+  inodes[handle].file_size += curr_total_bytes; // DBG
+  LockHandleRelease(inode_lock);  
+  return curr_total_bytes;
 }
 
 
@@ -387,7 +613,18 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
 //-----------------------------------------------------------------
 
 uint32 DfsInodeFilesize(uint32 handle) {
+  int filesize;
 
+  if (sb.valid == 0) {
+    printf("DfsInodeFilesize (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
+
+  LockHandleAcquire(inode_lock);
+  filesize = inodes[handle].file_size;
+  LockHandleRelease(inode_lock);
+
+  return filesize;
 }
 
 
@@ -402,7 +639,71 @@ uint32 DfsInodeFilesize(uint32 handle) {
 //-----------------------------------------------------------------
 
 uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
+  uint32 fs_blknum;
+  dfs_block fsblk_lvl1, fsblk_lvl2;
+  uint32 *ptr_lvl1, *ptr_lvl2;
+  uint32 offset_lvl1, offset_lvl2;
 
+
+  if (sb.valid == 0) {
+    printf("DfsInodeAllocateVirtualBlock (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
+
+  if (virtual_blocknum >= DFS_INODE_MAX_VIRTUAL_BLOCKNUM) {
+    printf("DfsInodeAllocateVirtualBlock (%d): ERROR - Virtual block number %d is out-of-bound.\n", GetCurrentPid(), virtual_blocknum);
+    printf("DfsInodeAllocateVirtualBlock (%d): INFO - Max virtual block number: %d.\n", GetCurrentPid(), DFS_INODE_MAX_VIRTUAL_BLOCKNUM);
+    return DFS_FAIL;
+  }
+
+  LockHandleAcquire(inode_lock);
+  if (virtual_blocknum < DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS) {
+    // direct
+    fs_blknum = DfsAllocateBlock();
+    inodes[handle].direct[virtual_blocknum] = fs_blknum;
+
+  } else if (virtual_blocknum < (DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS + (sb.fs_blk_size/4))) {
+    // indirect
+    if (inodes[handle].indirect == 0) { // indirect blk allocation needed
+      fs_blknum = DfsAllocateBlock();
+      inodes[handle].indirect = fs_blknum;
+    }
+
+    DfsReadBlock(inodes[handle].indirect, &fsblk_lvl1);
+    ptr_lvl1 = (uint32*) fsblk_lvl1.data;
+    offset_lvl1 = (virtual_blocknum-DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS) % (sb.fs_blk_size/4);
+    fs_blknum = DfsAllocateBlock();
+    ptr_lvl1[offset_lvl1] = fs_blknum;
+    DfsWriteBlock(inodes[handle].indirect, &fsblk_lvl1);
+
+  } else {
+    // double indirect - assume MAX virtual block number is within the range of double indirect
+    if (inodes[handle].double_indirect == 0) { // double indirect lvl1 blk allocation needed
+      fs_blknum = DfsAllocateBlock();
+      inodes[handle].double_indirect = fs_blknum;
+    }
+
+    DfsReadBlock(inodes[handle].double_indirect, &fsblk_lvl1);
+    ptr_lvl1 = (uint32*) fsblk_lvl1.data;
+    offset_lvl1 = (virtual_blocknum-DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS-(sb.fs_blk_size/4)) / (sb.fs_blk_size/4);
+
+    if (ptr_lvl1[offset_lvl1] == 0) { // double indirect lvl2 blk allocation needed
+      fs_blknum = DfsAllocateBlock();
+      ptr_lvl1[offset_lvl1] = fs_blknum;
+      DfsWriteBlock(inodes[handle].double_indirect, &fsblk_lvl1);
+    }
+
+    DfsReadBlock(ptr_lvl1[offset_lvl1], &fsblk_lvl2);
+    ptr_lvl2 = (uint32*) fsblk_lvl2.data;
+    offset_lvl2 = (virtual_blocknum-DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS-(sb.fs_blk_size/4)) % (sb.fs_blk_size/4);
+    fs_blknum = DfsAllocateBlock();
+    ptr_lvl2[offset_lvl2] = fs_blknum;
+    DfsWriteBlock(inodes[handle].indirect, &fsblk_lvl2);
+
+  }
+  LockHandleRelease(inode_lock);
+
+  return fs_blknum;
 
 }
 
@@ -414,6 +715,78 @@ uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
 // the inode identified by handle. Return DFS_FAIL on failure.
 //-----------------------------------------------------------------
 
-uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 virtual_blocknum) {
+uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 vblknum) {
+  int i, j;
+  dfs_block fsblk_lvl1, fsblk_lvl2;
+  uint32 *lvl1_ptr, *lvl2_ptr;
+  uint32 lvl1_offset, lvl2_offset;
+  uint32 dfs_blknum;
 
+  if (sb.valid == 0) {
+    printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
+
+  if (vblknum >= DFS_INODE_MAX_VIRTUAL_BLOCKNUM) {
+    printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Virtual block number %d is out-of-bound.\n", GetCurrentPid(), vblknum);
+    printf("DfsInodeTranslateVirtualToFilesys (%d): INFO - Max virtual block number: %d.\n", GetCurrentPid(), DFS_INODE_MAX_VIRTUAL_BLOCKNUM);
+    return DFS_FAIL;
+  }
+
+  LockHandleAcquire(inode_lock);
+  if (inodes[handle].inuse == 0) {
+    printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - This node is currently not in use\n", GetCurrentPid());
+    LockHandleRelease(inode_lock);
+    return DFS_FAIL;
+  } else {
+    if (vblknum < DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS) {
+      // direct
+      if (inodes[handle].direct[vblknum] == 0) {
+        printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Direct pointer is not allocated\n", GetCurrentPid());
+        return DFS_FAIL;
+      }
+
+      dfs_blknum = inodes[handle].direct[vblknum];
+
+    } else if (vblknum < (DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS + (sb.fs_blk_size/4))) {
+      // indirect
+      if (inodes[handle].indirect == 0) {
+        printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Indirect pointer is not allocated\n", GetCurrentPid());
+        return DFS_FAIL;
+      }
+
+      DfsReadBlock(inodes[handle].indirect, &fsblk_lvl1);
+      lvl1_ptr = (uint32*) fsblk_lvl1.data;
+      lvl1_offset = vblknum - DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS;
+      dfs_blknum = *(lvl1_ptr+lvl1_offset);
+      
+    } else {
+      // double indirect - assume MAX virtual block number is within the range of double indirect
+      if (inodes[handle].double_indirect == 0) {
+        printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Double indirect lvl1 pointer is not allocated\n", GetCurrentPid());
+        return DFS_FAIL;
+      }
+
+      DfsReadBlock(inodes[handle].double_indirect, &fsblk_lvl1);
+      lvl1_ptr = (uint32*) fsblk_lvl1.data;
+      lvl1_offset = vblknum - (DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS + (sb.fs_blk_size/4)); // find the relative block index
+      lvl1_offset /= (sb.fs_blk_size/4); // find the pointer pointing to the specific lvl2 block
+
+      if (*(lvl1_ptr+lvl1_offset) == 0) {
+        printf("DfsInodeTranslateVirtualToFilesys (%d): ERROR - Double indirect lvl2 pointer is not allocated\n", GetCurrentPid());
+        return DFS_FAIL;
+      }
+
+      DfsReadBlock(*(lvl1_ptr+lvl1_offset), &fsblk_lvl2);
+      lvl2_ptr = (uint32*) fsblk_lvl2.data;
+      lvl2_offset = vblknum - (DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS + (sb.fs_blk_size/4)); // find the relative block index
+      lvl2_offset %= (sb.fs_blk_size/4); // find the block num position in lvl2 block
+
+      dfs_blknum = *(lvl2_ptr+lvl2_offset);
+    }
+
+  }
+  LockHandleRelease(inode_lock);
+
+  return dfs_blknum;
 }
