@@ -51,7 +51,7 @@ void main (int argc, char *argv[])
  
   // 4) Write all inodes as not in use and empty (Write zeros to all the
   // dfs blocks corresponding to the inodes using FdiskWriteBlock)
-  bzero((char *)&block, DFS_BLOCKSIZE);
+  bzero(block.data, DFS_BLOCKSIZE);
   for (i = 0; i < FDISK_INODE_NUM_BLOCKS; i++) {
     FdiskWriteBlock(i+FDISK_INODE_BLOCK_START, &block);
   }
@@ -95,6 +95,8 @@ void main (int argc, char *argv[])
   //  6.3) Write superblock to the disk
   FdiskWriteBlock(FDISK_BOOT_FILESYSTEM_BLOCKNUM, &block);
   Printf("fdisk (%d): Formatted DFS disk for %d bytes.\n", getpid(), disksize);
+  Printf("fdisk (%d): ================== DISK HAS BEEN FORMATTED SUCCESSFULLY ==================\n", getpid(), disksize);
+  exitsim();
 }
 
 int FdiskWriteBlock(uint32 blocknum, dfs_block *b) {
@@ -112,9 +114,12 @@ int FdiskWriteBlock(uint32 blocknum, dfs_block *b) {
   scaler = DFS_BLOCKSIZE/diskblocksize;
 
   for (i = 0; i < scaler; i++) {
+
     if (disk_write_block((blocknum*scaler)+i, disk_b+(i*diskblocksize)) == DISK_FAIL) {
       Printf("fdisk (%d): ERROR - disk_write_block failed to write\n", getpid());
       return DFS_FAIL;
+    } else {
+      // Printf("FdiskWriteBlock (%d): DBG - write to disk block %d successfully\n", getpid(), (blocknum*scaler)+i);
     }
     
   }
