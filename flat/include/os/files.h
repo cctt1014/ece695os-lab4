@@ -4,8 +4,9 @@
 #include "dfs.h"
 #include "files_shared.h"
 
-//#define FILE_MAX_OPEN_FILES 15
+#define FILE_MAX_OPEN_FILES 15
 
+void FileModuleInit();
 
 
 #endif

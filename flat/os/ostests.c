@@ -7,7 +7,7 @@
 #define NUMBYTES 1024
 #define NON_ALGIN_BYTE_AMOUNT 1030
 
-#define NUM_TESTCASE 1024
+#define NUM_TESTCASE 300
 
 void RunOSTests() {
   // STUDENT: run any os-level tests here

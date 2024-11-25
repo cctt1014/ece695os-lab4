@@ -315,11 +315,11 @@ int DfsWriteBlock(uint32 blocknum, dfs_block *b){
 ////////////////////////////////////////////////////////////////////////////////
 // Inode-based functions
 ////////////////////////////////////////////////////////////////////////////////
+
 //-----------------------------------------------------------------
 // CompareTwoString compares 2 char strings. It returns DFS_SUCCESS  
 // if they are identical, returns DFS_FAIL if they are not.
 //-----------------------------------------------------------------
-
 int DfsCompareTwoString(char* str1, char* str2) {
   int i;
 
@@ -394,6 +394,7 @@ uint32 DfsInodeOpen(char *filename) {
     if (inodes[i].inuse == 0) {
       dstrncpy(inodes[i].fname, filename, sizeof(inodes[i].fname));
       inodes[i].inuse = 1;
+      inodes[i].file_size = 0;
       LockHandleRelease(inode_lock);
       return i;
     }
@@ -612,7 +613,9 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
   }
 
   LockHandleAcquire(inode_lock);
-  inodes[handle].file_size += curr_total_bytes; // DBG
+  if (inodes[handle].file_size < (start_byte + curr_total_bytes)) {
+    inodes[handle].file_size = start_byte + curr_total_bytes; // DBG
+  }
   LockHandleRelease(inode_lock);  
   return curr_total_bytes;
 }
@@ -626,6 +629,7 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
 
 uint32 DfsInodeFilesize(uint32 handle) {
   int filesize;
+  int inuse;
 
   if (sb.valid == 0) {
     printf("DfsInodeFilesize (%d): ERROR - filesystem has NOT been opened yet\n", GetCurrentPid());
@@ -633,8 +637,14 @@ uint32 DfsInodeFilesize(uint32 handle) {
   }
 
   LockHandleAcquire(inode_lock);
+  inuse = inodes[handle].inuse;
   filesize = inodes[handle].file_size;
   LockHandleRelease(inode_lock);
+
+  if (inuse == 0) {
+    printf("DfsInodeFilesize (%d): ERROR - Given inode is not in use.\n", GetCurrentPid());
+    return DFS_FAIL;
+  }
 
   return filesize;
 }
@@ -681,7 +691,7 @@ uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
     if (inodes[handle].indirect == 0) { // indirect blk allocation needed
       fs_blknum = DfsAllocateBlock();
       inodes[handle].indirect = fs_blknum;
-      printf("DfsInodeAllocateVirtualBlock (%d): INFO - inodes[%d].indirect is allocated to fsblock %d.\n", GetCurrentPid(), handle, inodes[handle].indirect);
+      // printf("DfsInodeAllocateVirtualBlock (%d): INFO - inodes[%d].indirect is allocated to fsblock %d.\n", GetCurrentPid(), handle, inodes[handle].indirect);
       bzero(fsblk_lvl1.data, sb.fs_blk_size);
     } else {
       DfsReadBlock(inodes[handle].indirect, &fsblk_lvl1);

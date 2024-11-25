@@ -4,6 +4,7 @@
 #include "dfs_shared.h"
 
 int DfsReadContiguousBytes(int start_blocknum, char *dest, int num_bytes);
+int DfsCompareTwoString(char* str1, char* str2);
 
 // Inode APIs
 uint32 DfsInodeFilenameExists(char *filename);
