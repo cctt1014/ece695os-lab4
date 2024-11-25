@@ -514,8 +514,13 @@ int DfsInodeReadBytes(uint32 handle, void *mem, int start_byte, int num_bytes) {
     DfsReadBlock(fsblknum, &fsblk);
     
     if (i == start_blk) {
-      bcopy(&fsblk.data[start_offset], (char*) mem, (sb.fs_blk_size - start_offset));
-      curr_total_bytes += sb.fs_blk_size - start_offset;
+      if (start_blk == end_blk-1) {
+        bcopy(&fsblk.data[start_offset], (char*) mem, num_bytes);
+        curr_total_bytes += num_bytes;
+      } else {
+        bcopy(&fsblk.data[start_offset], (char*) mem, (sb.fs_blk_size - start_offset));
+        curr_total_bytes += sb.fs_blk_size - start_offset;
+      }
 
     } else if (i == (end_blk-1)) {
       if (end_offset == 0) {
@@ -535,7 +540,7 @@ int DfsInodeReadBytes(uint32 handle, void *mem, int start_byte, int num_bytes) {
   //   printf("DfsInodeReadBytes (%d): ERROR - Requested %d bytes but actually read %d bytes\n", GetCurrentPid(), num_bytes, curr_total_bytes);
   //   return DFS_FAIL;
   // }
-  
+
   return curr_total_bytes;
 }
 
@@ -584,12 +589,18 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
     bzero(fsblk.data, sb.fs_blk_size);
     
     if (i == start_blk) {
-      if (start_offset != 0) {
+      if (start_offset != 0) { // when starting byte is not byte 0 in DFS block
         DfsReadBlock(fsblknum, &fsblk);
       }
-      bcopy((char*) mem, &fsblk.data[start_offset], (sb.fs_blk_size - start_offset));
-      curr_total_bytes += sb.fs_blk_size - start_offset;
 
+      if (start_blk == end_blk-1) { // when only writing one single block
+        bcopy((char*) mem, &fsblk.data[start_offset], num_bytes);
+        curr_total_bytes += num_bytes;
+      } else { // when writing across DFS blocks
+        bcopy((char*) mem, &fsblk.data[start_offset], (sb.fs_blk_size - start_offset));
+        curr_total_bytes += (sb.fs_blk_size - start_offset);
+      }
+      
     } else if (i == (end_blk-1)) {
       if (end_offset != 0) {
         DfsReadBlock(fsblknum, &fsblk);
@@ -604,7 +615,7 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
       curr_total_bytes += sb.fs_blk_size;
 
     }
-
+    
     DfsWriteBlock(fsblknum, &fsblk);
   }
 
@@ -617,6 +628,7 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
   if (inodes[handle].file_size < (start_byte + curr_total_bytes)) {
     inodes[handle].file_size = start_byte + curr_total_bytes; // DBG
   }
+  printf("DfsInodeWriteBytes (%d): DBG - Current inode[%d].file_size is %d.\n", GetCurrentPid(), handle, inodes[handle].file_size);
   LockHandleRelease(inode_lock);  
   return curr_total_bytes;
 }

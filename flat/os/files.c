@@ -170,6 +170,7 @@ int FileRead(uint32 handle, void *mem, int num_bytes) {
   LockHandleAcquire(fd_lock);
   fd[handle].curr_pos = curr_pos + total_bytes_read;
   fd[handle].eof = eof;
+  printf("FileRead (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
   LockHandleRelease(fd_lock);
 
   return total_bytes_read;
@@ -188,12 +189,12 @@ int FileWrite(uint32 handle, void *mem, int num_bytes) {
   uint32 curr_pos;
 
   LockHandleAcquire(fd_lock);
-  if (fd[handle].inuse = 0) {
+  if (fd[handle].inuse == 0) {
     printf("FileWrite (%d): ERROR - Input fd %d is not in use.\n", GetCurrentPid(), handle);
     LockHandleRelease(fd_lock);
     return FILE_FAIL;
   } else if (fd[handle].mode[0] != 'w') {
-    printf("FileRead (%d): ERROR - Fd %d is NOT in write mode.\n", GetCurrentPid(), handle);
+    printf("FileWrite (%d): ERROR - Fd %d is NOT in write mode.\n", GetCurrentPid(), handle);
     LockHandleRelease(fd_lock);
     return FILE_FAIL;
   }
@@ -205,15 +206,16 @@ int FileWrite(uint32 handle, void *mem, int num_bytes) {
   curr_pos = fd[handle].curr_pos;
   LockHandleRelease(fd_lock);
 
-  total_bytes_written = DfsInodeWriteBytes(handle, mem, curr_pos, num_bytes);
+  total_bytes_written = DfsInodeWriteBytes(inode_handle, mem, curr_pos, num_bytes);
   if (total_bytes_written == DFS_FAIL) {
-    printf("FileRead (%d): ERROR - DfsInodeWriteBytes failed to write bytes.\n", GetCurrentPid(), handle);
+    printf("FileWrite (%d): ERROR - DfsInodeWriteBytes failed to write bytes.\n", GetCurrentPid(), handle);
     return FILE_FAIL;
   }
 
   // Shift current position
   LockHandleAcquire(fd_lock);
   fd[handle].curr_pos = curr_pos + total_bytes_written;
+  printf("FileWrite (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
   LockHandleRelease(fd_lock);
 
   return total_bytes_written;
@@ -221,7 +223,7 @@ int FileWrite(uint32 handle, void *mem, int num_bytes) {
 
 int FileSeek(uint32 handle, int num_bytes, int from_where) {
   LockHandleAcquire(fd_lock);
-  if (fd[handle].inuse = 0) {
+  if (fd[handle].inuse == 0) {
     printf("FileSeek (%d): ERROR - Input fd %d is not in use.\n", GetCurrentPid(), handle);
     LockHandleRelease(fd_lock);
     return FILE_FAIL;
@@ -241,6 +243,7 @@ int FileSeek(uint32 handle, int num_bytes, int from_where) {
 
   fd[handle].eof = 0;
 
+  printf("FileSeek (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
   LockHandleRelease(fd_lock);
   return FILE_SUCCESS;
 }
