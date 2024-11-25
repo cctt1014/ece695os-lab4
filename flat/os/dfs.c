@@ -531,10 +531,11 @@ int DfsInodeReadBytes(uint32 handle, void *mem, int start_byte, int num_bytes) {
     }
   }
 
-  if (curr_total_bytes != num_bytes) {
-    printf("DfsInodeReadBytes (%d): ERROR - Requested %d bytes but actually read %d bytes\n", GetCurrentPid(), num_bytes, curr_total_bytes);
-    return DFS_FAIL;
-  }
+  // if (curr_total_bytes != num_bytes) {
+  //   printf("DfsInodeReadBytes (%d): ERROR - Requested %d bytes but actually read %d bytes\n", GetCurrentPid(), num_bytes, curr_total_bytes);
+  //   return DFS_FAIL;
+  // }
+  
   return curr_total_bytes;
 }
 
@@ -607,10 +608,10 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
     DfsWriteBlock(fsblknum, &fsblk);
   }
 
-  if (curr_total_bytes != num_bytes) {
-    printf("DfsInodeWriteBytes (%d): ERROR - Requested %d bytes but actually write %d bytes\n", GetCurrentPid(), num_bytes, curr_total_bytes);
-    return DFS_FAIL;
-  }
+  // if (curr_total_bytes != num_bytes) {
+  //   printf("DfsInodeWriteBytes (%d): ERROR - Requested %d bytes but actually write %d bytes\n", GetCurrentPid(), num_bytes, curr_total_bytes);
+  //   return DFS_FAIL;
+  // }
 
   LockHandleAcquire(inode_lock);
   if (inodes[handle].file_size < (start_byte + curr_total_bytes)) {

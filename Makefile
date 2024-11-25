@@ -1,13 +1,16 @@
 PS=0
 PE=52
 
-.PHONY: fdisk ostests build_os clean print
+.PHONY: fdisk ostests fileio build_os clean print
 
 fdisk: clean build_os
 	cd flat/apps/fdisk; make; make run
 
 ostests: clean build_os
 	cd flat/apps/ostests; make; make run 
+
+fileio: clean build_os
+	cd flat/apps/fileio; make; make run 
 
 build_os:
 	cd flat/os; make
@@ -21,4 +24,5 @@ print:
 clean:
 	cd flat/apps/fdisk; make clean
 	cd flat/apps/ostests; make clean
+	cd flat/apps/fileio; make clean
 	cd flat/os; make clean

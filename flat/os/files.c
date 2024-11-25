@@ -43,7 +43,7 @@ uint32 FileOpen(char *filename, char *mode) {
   uint32 inode_handle;
   uint32 fd_handle;
 
-  if (mode[0] != 'r' || mode[0] != 'w') {
+  if (mode[0] != 'r' && mode[0] != 'w') {
     printf("FileOpen (%d): ERROR - Invalid file mode %s! File mode needs to be r or w\n", GetCurrentPid(), mode);
     return FILE_FAIL;
   }
