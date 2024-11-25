@@ -1,7 +1,6 @@
 #include "ostraps.h"
 #include "dlxos.h"
 #include "traps.h"
-#include "queue.h"
 #include "disk.h"
 #include "dfs.h"
 #include "synch.h"
@@ -9,9 +8,16 @@
 static dfs_inode inodes[DFS_INODE_MAX_NUM]; // all inodes
 static dfs_superblock sb; // superblock
 static uint32 fbv[DFS_FBV_MAX_NUM_WORDS]; // Free block vector
+static dfs_block bcache[DFS_NUM_BUFFER_CACHE_ENTRY];
+static buffer_cache_slot bcache_slots[DFS_NUM_BUFFER_CACHE_ENTRY];
 
 static lock_t inode_lock;
 static lock_t fbv_lock;
+static lock_t bcache_lock;
+
+// Queues for buffer cache slots
+static Queue empty_slots;
+static Queue full_slots;
 
 static uint32 negativeone = 0xFFFFFFFF;
 static inline uint32 invert(uint32 n) { return n ^ negativeone; }
@@ -31,6 +37,7 @@ static inline uint32 invert(uint32 n) { return n ^ negativeone; }
 void DfsModuleInit() {
   inode_lock = LockCreate();
   fbv_lock = LockCreate();
+  bcache_lock = LockCreate();
 
   // You essentially set the file system as invalid and then open 
   // using DfsOpenFileSystem().
@@ -38,8 +45,35 @@ void DfsModuleInit() {
 	DfsOpenFileSystem();
 
   // later initialize buffer cache-here.
+  DfsBufferCacheInit();
 
 }
+
+void DfsBufferCacheInit() {
+  int i;
+  AQueueInit(&empty_slots);
+  AQueueInit(&full_slots);
+
+  // For each buf cache slot in the global bcache_slots array:
+  for (i = 0; i < DFS_NUM_BUFFER_CACHE_ENTRY; i++) {
+    if ((bcache_slots[i].l = AQueueAllocLink(&bcache_slots[i])) == NULL) {
+      printf("FATAL ERROR: could not allocate link in DfsBufferCacheInit!\n");
+      GracefulExit();
+    }
+    bcache_slots[i].inuse = 0;
+    bcache_slots[i].dirty = 0;
+    bcache_slots[i].fblknum = -1;
+    bcache_slots[i].count = 0;
+    
+    // Finally, insert the link into the queue
+    if (AQueueInsertFirst(&empty_slots, bcache_slots[i].l) != QUEUE_SUCCESS) {
+      printf("FATAL ERROR: could not insert bcache slot link into queue in DfsBufferCacheInit!\n");
+      GracefulExit();
+    }
+  }
+  
+}
+
 
 //-----------------------------------------------------------------
 // DfsInavlidate marks the current version of the filesystem in
@@ -90,14 +124,13 @@ int DfsOpenFileSystem() {
   // 4) All other blocks are sized by virtual block size:
   // 4.1) Read inodes (Use DfsReadContiguousBytes)
   // 4.2) Read free block vector
+  LockHandleAcquire(inode_lock);
   DfsReadContiguousBytes(sb.inode_fs_blk_idx, (char*)&inodes, sizeof(inodes));
-  DfsReadContiguousBytes(sb.fbv_fs_blk_idx, (char*)&fbv, sizeof(fbv));
+  LockHandleRelease(inode_lock);
 
-  // num_fbv_fblks = (sb.total_num_fs_block / DFS_BITS_PER_BYTE) / sb.fs_blk_size;
-  // for (i = 0; i < num_fbv_fblks; i++) {
-  //   DfsReadBlock(i+sb.fbv_fs_blk_idx, &fblk);
-  //   bcopy((char*)&fblk, ((char*)fbv)+(i*sb.fs_blk_size), sb.fs_blk_size);
-  // }
+  LockHandleAcquire(fbv_lock);
+  DfsReadContiguousBytes(sb.fbv_fs_blk_idx, (char*)&fbv, sizeof(fbv));
+  LockHandleRelease(fbv_lock);
 
   // 5) (5.1) Change superblock to be invalid, (5.2) write back to disk, then
   // (5.3) change it back to be valid in memory (mysuperblock.valid = VALID)
@@ -135,14 +168,14 @@ int DfsCloseFileSystem() {
   num_inode_fblks = sb.num_inodes * 128 / sb.fs_blk_size;
   for (i = 0; i < num_inode_fblks; i++) {
     bcopy(((char*)inodes)+(i*sb.fs_blk_size), fblk.data, sb.fs_blk_size);
-    DfsWriteBlock(i+sb.inode_fs_blk_idx, &fblk);
+    DfsWriteBlockUncached(i+sb.inode_fs_blk_idx, &fblk);
   }
 
   // Write fbv to disk
   num_fbv_fblks = (sb.total_num_fs_block / DFS_BITS_PER_BYTE) / sb.fs_blk_size;
   for (i = 0; i < num_fbv_fblks; i++) {
     bcopy(((char*)fbv)+(i*sb.fs_blk_size), fblk.data, sb.fs_blk_size);
-    DfsWriteBlock(i+sb.fbv_fs_blk_idx, &fblk);
+    DfsWriteBlockUncached(i+sb.fbv_fs_blk_idx, &fblk);
   }
 
   // Write superblock with set valid bit to disk
@@ -252,13 +285,13 @@ int DfsReadContiguousBytes(int start_blocknum, char *dest, int num_bytes) {
 
 
 //-----------------------------------------------------------------
-// DfsReadBlock reads an allocated DFS block from the disk
+// DfsReadBlockUncached reads an allocated DFS block from the disk
 // (which could span multiple physical disk blocks).  The block
 // must be allocated in order to read from it.  Returns DFS_FAIL
 // on failure, and the number of bytes read on success.  
 //-----------------------------------------------------------------
 
-int DfsReadBlock(uint32 blocknum, dfs_block *b) {
+int DfsReadBlockUncached(uint32 blocknum, dfs_block *b) {
   int i;
   disk_block dblk;
   int ratio = sb.fs_blk_size/sb.disk_blk_size;
@@ -266,13 +299,13 @@ int DfsReadBlock(uint32 blocknum, dfs_block *b) {
   // check whether this dfs block is allocated
   if ((fbv[blocknum/32] & (1 << blocknum%32)) == 0) {
     printf("[DBG] fbv[%d] = %d\n", blocknum/32, fbv[blocknum/32]);
-    printf("DfsReadBlock (%d): ERROR -  Input DFS block num %d has not been allocated\n", GetCurrentPid(), blocknum);
+    printf("DfsReadBlockUncached (%d): ERROR -  Input DFS block num %d has not been allocated\n", GetCurrentPid(), blocknum);
     return DFS_FAIL;
   }
 
   for (i = 0; i < ratio; i += 1) {
     if (DiskReadBlock(blocknum*ratio+i, &dblk) == DISK_FAIL) {
-      printf("DfsReadBlock (%d): ERROR -  DiskReadBlock failed\n", GetCurrentPid());
+      printf("DfsReadBlockUncached (%d): ERROR -  DiskReadBlock failed\n", GetCurrentPid());
       return DFS_FAIL;
     }
     bcopy((char*) &dblk, ((char*) b)+(i*sb.disk_blk_size), sb.disk_blk_size);
@@ -283,32 +316,194 @@ int DfsReadBlock(uint32 blocknum, dfs_block *b) {
 
 
 //-----------------------------------------------------------------
-// DfsWriteBlock writes to an allocated DFS block on the disk
+// DfsWriteBlockUncached writes to an allocated DFS block on the disk
 // (which could span multiple physical disk blocks).  The block
 // must be allocated in order to write to it.  Returns DFS_FAIL
 // on failure, and the number of bytes written on success.  
 //-----------------------------------------------------------------
 
-int DfsWriteBlock(uint32 blocknum, dfs_block *b){
+int DfsWriteBlockUncached(uint32 blocknum, dfs_block *b){
   int i;
   disk_block dblk;
   int ratio = sb.fs_blk_size/sb.disk_blk_size;
 
   // check whether this dfs block is allocated
   if ((fbv[blocknum/32] & (1 << blocknum%32)) == 0) {
-    printf("DfsWriteBlock (%d): ERROR -  Input DFS indexed block has not been allocated\n", GetCurrentPid());
+    printf("DfsWriteBlockUncached (%d): ERROR -  Input DFS indexed block has not been allocated\n", GetCurrentPid());
     return DFS_FAIL;
   }
 
   for (i = 0; i < ratio; i += 1) {
     bcopy(((char*) b)+(i*sb.disk_blk_size), (char*) &dblk, sb.disk_blk_size);
     if (DiskWriteBlock(blocknum*ratio+i, &dblk) == DISK_FAIL) {
-      printf("DfsWriteBlock (%d): ERROR -  DiskWriteBlock failed\n", GetCurrentPid());
+      printf("DfsWriteBlockUncached (%d): ERROR -  DiskWriteBlock failed\n", GetCurrentPid());
       return DFS_FAIL;
     } 
   }
 
   return sb.fs_blk_size;
+}
+
+//-----------------------------------------------------------------
+// DfsReadBlock checks the buffer cache for blocknum, and loads it
+// from the disk into the buffer cache if it is not found. It then
+// copies the bytes from the buffer copy into the dfs_block b.
+//-----------------------------------------------------------------
+
+int DfsReadBlock(uint32 blocknum, dfs_block *b) {
+  int bcache_handle;
+  
+  bcache_handle = DfsCacheHit(blocknum);
+  if (bcache_handle == DFS_FAIL) { // Not found in cache
+    bcache_handle = DfsCacheAllocateSlot(blocknum);
+
+    LockHandleAcquire(bcache_lock);
+    DfsReadBlockUncached(blocknum, &bcache[bcache_handle]); // disk -> buffer cache
+    bcopy(bcache[bcache_handle].data, b->data, sb.fs_blk_size); // buffer cache -> b
+    LockHandleRelease(bcache_lock);
+
+  } else { // cache hit
+    LockHandleAcquire(bcache_lock);
+    bcopy(bcache[bcache_handle].data, b->data, sb.fs_blk_size);
+    LockHandleRelease(bcache_lock);
+    
+  }
+
+  return sb.fs_blk_size;
+
+}
+
+//-----------------------------------------------------------------
+// DfsWriteBlock checks the buffer cache for blocknum, and reads
+// it from the disk into the buffer cache if it is not found. It
+// then writes to the buffer cache copy of the block, and marks the
+// block as dirty.
+//-----------------------------------------------------------------
+
+int DfsWriteBlock(int blocknum, dfs_block *b) {
+  int bcache_handle;
+  
+  bcache_handle = DfsCacheHit(blocknum);
+  if (bcache_handle == DFS_FAIL) { // Not found in cache
+    bcache_handle = DfsCacheAllocateSlot(blocknum);
+
+    LockHandleAcquire(bcache_lock);
+    DfsReadBlockUncached(blocknum, &bcache[bcache_handle]); // disk -> buffer cache
+    bcopy(b->data, bcache[bcache_handle].data, sb.fs_blk_size); // b -> buffer cache
+    LockHandleRelease(bcache_lock);
+
+  } else { // cache hit
+    LockHandleAcquire(bcache_lock);
+    bcopy(b->data, bcache[bcache_handle].data, sb.fs_blk_size);
+    LockHandleRelease(bcache_lock);
+  }
+
+  bcache_slots[bcache_handle].dirty = 1;
+  return sb.fs_blk_size;
+}
+
+//-----------------------------------------------------------------
+// DfsCacheHit checks the cache for the given blocknum. Returns
+// DFS_FAIL if blocknum is not found, and the handle to the buffer
+// cache slot on success.
+//-----------------------------------------------------------------
+
+int DfsCacheHit(int blocknum) {
+  buffer_cache_slot *curr_bcache;
+  Link *l = NULL;
+
+  if (AQueueEmpty(&full_slots)) { // No full slot available
+    return DFS_FAIL;
+  } else {
+    l = AQueueFirst(&full_slots);
+    while (l != NULL) {
+      curr_bcache = AQueueObject(l);
+      if (curr_bcache->inuse == 1 && curr_bcache->fblknum == blocknum) { // bcache hit
+        curr_bcache->count += 1;
+        return (curr_bcache - bcache_slots);
+      }
+      l = AQueueNext(l);
+    }
+  }
+
+  return DFS_FAIL;
+}
+
+//-----------------------------------------------------------------
+// DfsCacheAllocateSlot allocates a buffer slot for the given
+// filesystem block number. If an empty slot is not available, the
+// least frequently used block should be evicted. If this evicted
+// block is marked as dirty, then it must be written back to the disk.
+//-----------------------------------------------------------------
+
+int DfsCacheAllocateSlot(int blocknum) {
+  buffer_cache_slot *curr_bcache, *target_bcache;
+  Link *l = NULL;
+
+  if (AQueueEmpty(&empty_slots)) { // No available empty slot, apply LFU replacement policy
+    // init
+    target_bcache = (buffer_cache_slot *)AQueueObject(AQueueFirst (&full_slots));
+
+    // loop through full slots
+    l = AQueueFirst(&full_slots);
+    while (l != NULL) {
+      curr_bcache = AQueueObject(l);
+      if (curr_bcache->count < target_bcache->count) { // find a slot with a smaller count
+        target_bcache = AQueueObject(l);
+      }
+      l = AQueueNext(l);
+    }
+
+    // evict target bcache slot
+    if (target_bcache->dirty == 1) {
+      DfsWriteBlockUncached(target_bcache->fblknum, &bcache[(target_bcache-bcache_slots)]);
+    }
+  } else { // pick an available slot from queue
+    target_bcache = (buffer_cache_slot *)AQueueObject(AQueueFirst (&empty_slots));
+  }
+
+  target_bcache->inuse = 1;
+  target_bcache->dirty = 0;
+  target_bcache->fblknum = blocknum;
+  target_bcache->count = 1;
+
+  if (AQueueRemove(&(target_bcache->l)) != QUEUE_SUCCESS) {
+    printf("FATAL ERROR: could not remove link in DfsCacheAllocateSlot!\n");
+    return DFS_FAIL;
+  }
+  if (AQueueInsertFirst(&full_slots, target_bcache->l) != QUEUE_SUCCESS) {
+    printf("FATAL ERROR: could not insert bcache slot link into full_slots queue in DfsCacheAllocateSlot!\n");
+    return DFS_FAIL;
+  }
+  return (target_bcache-bcache_slots);
+
+}
+
+//-----------------------------------------------------------------
+// DfsCacheFlush move through all the full slots in the buffer,
+// writing any dirty blocks to the disk and then adding the buffer
+// slot back to the list of available empty slots. Returns DSF_FAIL
+// on failure and DFS_SUCCESS on success. This function is primarily
+// used when the operating system exits. You will need to call it
+// from your DfsFileSystemClose function.
+//-----------------------------------------------------------------
+
+int DfsCacheFlush() {
+  buffer_cache_slot *curr_bcache;
+  Link *l = NULL;
+
+  l = AQueueFirst(&full_slots);
+  while (l != NULL) {
+      curr_bcache = AQueueObject(l);
+
+      if (curr_bcache->dirty == 1) {
+        DfsWriteBlockUncached(curr_bcache->fblknum, &bcache[(curr_bcache-bcache_slots)]);
+      }
+
+      l = AQueueNext(l);
+  }
+
+  return DFS_SUCCESS;
 }
 
 
@@ -442,7 +637,7 @@ int DfsInodeDelete(uint32 handle) {
 
     // Free indirect blocks
     if (inodes[handle].indirect != 0) {
-      DfsReadBlock(inodes[handle].indirect, &fblk_lvl1);
+      DfsReadBlockUncached(inodes[handle].indirect, &fblk_lvl1);
       blknum_lvl1_ptr = (uint32*) fblk_lvl1.data;
       for (i = 0; i < (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS); i++) {
         if (*(blknum_lvl1_ptr+i) != 0) {
@@ -453,11 +648,11 @@ int DfsInodeDelete(uint32 handle) {
 
     // Free double-indirect blocks
     if (inodes[handle].double_indirect != 0) {
-      DfsReadBlock(inodes[handle].double_indirect, &fblk_lvl1); // 1st lvl address blk
+      DfsReadBlockUncached(inodes[handle].double_indirect, &fblk_lvl1); // 1st lvl address blk
       blknum_lvl1_ptr = (uint32*) fblk_lvl1.data;
       for (i = 0; i < (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS); i++) {
         if (*(blknum_lvl1_ptr+i) != 0) {
-          DfsReadBlock(*(blknum_lvl1_ptr+i), &fblk_lvl2); // 2nd lvl address blk
+          DfsReadBlockUncached(*(blknum_lvl1_ptr+i), &fblk_lvl2); // 2nd lvl address blk
           blknum_lvl2_ptr = (uint32*) fblk_lvl2.data;
           for (j = 0; j < (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS); j++) {
             if (*(blknum_lvl2_ptr+j) != 0) {
@@ -511,7 +706,7 @@ int DfsInodeReadBytes(uint32 handle, void *mem, int start_byte, int num_bytes) {
   for (i = start_blk; i < end_blk; i++) {
     fsblknum = DfsInodeTranslateVirtualToFilesys(handle, i);
     // printf("DfsInodeReadBytes (%d): DBG - vblknum: %d -> fsblknum: %d\n", GetCurrentPid(), i, fsblknum);
-    DfsReadBlock(fsblknum, &fsblk);
+    DfsReadBlockUncached(fsblknum, &fsblk);
     
     if (i == start_blk) {
       if (start_blk == end_blk-1) {
@@ -590,7 +785,7 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
     
     if (i == start_blk) {
       if (start_offset != 0) { // when starting byte is not byte 0 in DFS block
-        DfsReadBlock(fsblknum, &fsblk);
+        DfsReadBlockUncached(fsblknum, &fsblk);
       }
 
       if (start_blk == end_blk-1) { // when only writing one single block
@@ -603,7 +798,7 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
       
     } else if (i == (end_blk-1)) {
       if (end_offset != 0) {
-        DfsReadBlock(fsblknum, &fsblk);
+        DfsReadBlockUncached(fsblknum, &fsblk);
       } else {
         end_offset = sb.fs_blk_size;
       }
@@ -616,7 +811,7 @@ int DfsInodeWriteBytes(uint32 handle, void *mem, int start_byte, int num_bytes) 
 
     }
     
-    DfsWriteBlock(fsblknum, &fsblk);
+    DfsWriteBlockUncached(fsblknum, &fsblk);
   }
 
   // if (curr_total_bytes != num_bytes) {
@@ -707,14 +902,14 @@ uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
       // printf("DfsInodeAllocateVirtualBlock (%d): INFO - inodes[%d].indirect is allocated to fsblock %d.\n", GetCurrentPid(), handle, inodes[handle].indirect);
       bzero(fsblk_lvl1.data, sb.fs_blk_size);
     } else {
-      DfsReadBlock(inodes[handle].indirect, &fsblk_lvl1);
+      DfsReadBlockUncached(inodes[handle].indirect, &fsblk_lvl1);
     }
 
     ptr_lvl1 = (uint32*) fsblk_lvl1.data;
     offset_lvl1 = (virtual_blocknum-DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS) % (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS);
     fs_blknum = DfsAllocateBlock();
     ptr_lvl1[offset_lvl1] = fs_blknum;
-    DfsWriteBlock(inodes[handle].indirect, &fsblk_lvl1);
+    DfsWriteBlockUncached(inodes[handle].indirect, &fsblk_lvl1);
 
     result_blknum = ptr_lvl1[offset_lvl1];
     
@@ -726,7 +921,7 @@ uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
       inodes[handle].double_indirect = fs_blknum;
       bzero(fsblk_lvl1.data, sb.fs_blk_size);
     } else {
-      DfsReadBlock(inodes[handle].double_indirect, &fsblk_lvl1);
+      DfsReadBlockUncached(inodes[handle].double_indirect, &fsblk_lvl1);
     }
 
     
@@ -736,10 +931,10 @@ uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
     if (ptr_lvl1[offset_lvl1] == 0) { // double indirect lvl2 blk allocation needed
       fs_blknum = DfsAllocateBlock();
       ptr_lvl1[offset_lvl1] = fs_blknum;
-      DfsWriteBlock(inodes[handle].double_indirect, &fsblk_lvl1);
+      DfsWriteBlockUncached(inodes[handle].double_indirect, &fsblk_lvl1);
       bzero(fsblk_lvl2.data, sb.fs_blk_size);
     } else {
-      DfsReadBlock(ptr_lvl1[offset_lvl1], &fsblk_lvl2);
+      DfsReadBlockUncached(ptr_lvl1[offset_lvl1], &fsblk_lvl2);
     }
 
     
@@ -747,7 +942,7 @@ uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
     offset_lvl2 = (virtual_blocknum-(DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS+DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS)) % (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS);
     fs_blknum = DfsAllocateBlock();
     ptr_lvl2[offset_lvl2] = fs_blknum;
-    DfsWriteBlock(ptr_lvl1[offset_lvl1], &fsblk_lvl2);
+    DfsWriteBlockUncached(ptr_lvl1[offset_lvl1], &fsblk_lvl2);
 
     result_blknum = ptr_lvl2[offset_lvl2];
 
@@ -809,7 +1004,7 @@ uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 vblknum) {
         return DFS_FAIL;
       }
 
-      DfsReadBlock(inodes[handle].indirect, &fsblk_lvl1);
+      DfsReadBlockUncached(inodes[handle].indirect, &fsblk_lvl1);
       lvl1_ptr = (uint32*) fsblk_lvl1.data;
       lvl1_offset = vblknum - DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS;
 
@@ -829,7 +1024,7 @@ uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 vblknum) {
         return DFS_FAIL;
       }
 
-      DfsReadBlock(inodes[handle].double_indirect, &fsblk_lvl1);
+      DfsReadBlockUncached(inodes[handle].double_indirect, &fsblk_lvl1);
       lvl1_ptr = (uint32*) fsblk_lvl1.data;
       lvl1_offset = vblknum - (DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS + (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS)); // find the relative block index
       lvl1_offset /= (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS); // find the pointer pointing to the specific lvl2 block
@@ -840,7 +1035,7 @@ uint32 DfsInodeTranslateVirtualToFilesys(uint32 handle, uint32 vblknum) {
         return DFS_FAIL;
       }
 
-      DfsReadBlock(*(lvl1_ptr+lvl1_offset), &fsblk_lvl2);
+      DfsReadBlockUncached(*(lvl1_ptr+lvl1_offset), &fsblk_lvl2);
       lvl2_ptr = (uint32*) fsblk_lvl2.data;
       lvl2_offset = vblknum - (DFS_INODE_NUM_DIRECT_ADDRESSED_BLOCKS + (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS)); // find the relative block index
       lvl2_offset %= (DFS_INODE_NUM_INDIRECT_ADDRESSED_BLOCKS); // find the block num position in lvl2 block

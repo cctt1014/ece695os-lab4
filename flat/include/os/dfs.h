@@ -2,6 +2,19 @@
 #define __DFS_H__
 
 #include "dfs_shared.h"
+#include "queue.h"
+
+#define DFS_NUM_BUFFER_CACHE_ENTRY 16
+
+typedef struct buffer_cache_slot {
+  int inuse;
+	int dirty; // To indicate the block is dirty and must be written to disk during eviction
+	uint32 fblknum; // DFS block number cached by this buffer cache entry
+	int count; // Number of file operations
+	Link *l; // To move this node around empty and full queue.
+} buffer_cache_slot;
+
+void DfsBufferCacheInit();
 
 int DfsReadContiguousBytes(int start_blocknum, char *dest, int num_bytes);
 int DfsCompareTwoString(char* str1, char* str2);
