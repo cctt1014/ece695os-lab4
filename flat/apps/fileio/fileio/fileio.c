@@ -59,7 +59,7 @@ void main (int argc, char *argv[])
 
   fd = file_open("fileio_test2.txt", "r");
   file_seek(fd, START_OFS+NUM_BYTES+(NUM_BYTES/2), FILE_SEEK_CUR); // move curr_pos to the correct position
-  file_read(fd, &read_data[NUM_BYTES/2], NUM_BYTES/2); // read the 
+  file_read(fd, &read_data[NUM_BYTES/2], NUM_BYTES/2); // read the second half of data
   file_close(fd);
 
   for (i = 0; i < NUM_BYTES; i++) {
