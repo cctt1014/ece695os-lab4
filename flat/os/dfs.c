@@ -261,6 +261,8 @@ int DfsFreeBlock(uint32 blocknum) {
   fbv[i] &= invert(1 << j);
   LockHandleRelease(fbv_lock);
 
+  // printf("DfsFreeBlock (%d): DBG - DFS block %d is set free\n", GetCurrentPid(), blocknum);
+
   return DFS_SUCCESS;
 }
 
@@ -339,7 +341,7 @@ int DfsWriteBlockUncached(uint32 blocknum, dfs_block *b){
 
   // check whether this dfs block is allocated
   if ((fbv[blocknum/32] & (1 << blocknum%32)) == 0) {
-    printf("DfsWriteBlockUncached (%d): ERROR -  Input DFS indexed block has not been allocated\n", GetCurrentPid());
+    printf("DfsWriteBlockUncached (%d): ERROR -  Input DFS indexed block %d has not been allocated\n", GetCurrentPid(), blocknum);
     return DFS_FAIL;
   }
 
@@ -472,6 +474,8 @@ int DfsCacheAllocateSlot(int blocknum) {
     if (target_bcache->dirty == 1) {
       DfsWriteBlockUncached(target_bcache->fblknum, &bcache[(target_bcache-bcache_slots)]);
     }
+
+    printf("DfsCacheAllocateSlot (%d) DFS Block %d is evicted from buffer cache!\n", GetCurrentPid(), target_bcache->fblknum);
   } else { // pick an available slot from queue
     target_bcache = (buffer_cache_slot *)AQueueObject(AQueueFirst (&empty_slots));
   }
@@ -493,7 +497,6 @@ int DfsCacheAllocateSlot(int blocknum) {
 
   if (AQueueInsertLast(&full_slots, target_bcache->l) != QUEUE_SUCCESS) {
     printf("FATAL ERROR: could not insert bcache slot link into full_slots queue in DfsCacheAllocateSlot!\n");
-    printf("ERROR INFO: full slot queue length: %d\n", AQueueLength(&full_slots));
     return DFS_FAIL;
   }
 
@@ -511,18 +514,50 @@ int DfsCacheAllocateSlot(int blocknum) {
 //-----------------------------------------------------------------
 
 int DfsCacheFlush() {
+  int i, j;
   buffer_cache_slot *curr_bcache;
   Link *l = NULL;
 
   l = AQueueFirst(&full_slots);
   while (l != NULL) {
-      curr_bcache = AQueueObject(l);
+    curr_bcache = AQueueObject(l);
 
-      if (curr_bcache->dirty == 1) {
+    if ((curr_bcache->inuse == 1) && (curr_bcache->dirty == 1)) {
+      // Check whether the DFS block has been freed
+      i = curr_bcache->fblknum / 32;
+      j = curr_bcache->fblknum % 32;
+      if ((fbv[i] & (1 << j)) != 0) {
+        printf("DfsCacheFlush (%d) Buffer cache flush out DFS Block %d!\n", GetCurrentPid(), curr_bcache->fblknum);
         DfsWriteBlockUncached(curr_bcache->fblknum, &bcache[(curr_bcache-bcache_slots)]);
       }
 
+      // Reset this buffer cache slot
+      curr_bcache->inuse = 0;
+      curr_bcache->dirty = 0;
+      curr_bcache->fblknum = -1;
+      curr_bcache->count = 0;
+
       l = AQueueNext(l);
+
+      // Move this buffer cache slot from full to empty queue
+      if (AQueueRemove(&(curr_bcache->l)) != QUEUE_SUCCESS) {
+        printf("FATAL ERROR: could not remove link in DfsCacheFlush!\n");
+        return DFS_FAIL;
+      }
+
+      if ((curr_bcache->l = AQueueAllocLink(curr_bcache)) == NULL) {
+        printf("FATAL ERROR: could not get Queue Link in DfsCacheFlush!\n");
+        GracefulExit();
+      }
+
+      if (AQueueInsertLast(&empty_slots, curr_bcache->l) != QUEUE_SUCCESS) {
+        printf("FATAL ERROR: could not insert bcache slot link into empty_slots queue in DfsCacheFlush!\n");
+        return DFS_FAIL;
+      }
+    } else {
+      l = AQueueNext(l);
+    }
+    
   }
 
   return DFS_SUCCESS;
@@ -666,6 +701,7 @@ int DfsInodeDelete(uint32 handle) {
           DfsFreeBlock(*(blknum_lvl1_ptr+i));
         }
       }
+      DfsFreeBlock(inodes[handle].indirect);
     }
 
     // Free double-indirect blocks
@@ -681,8 +717,11 @@ int DfsInodeDelete(uint32 handle) {
               DfsFreeBlock(*(blknum_lvl2_ptr+j));
             }
           }
+
+          DfsFreeBlock(*(blknum_lvl1_ptr+i));
         }
       }
+      DfsFreeBlock(inodes[handle].double_indirect);
     }
 
     // Clear the inode
@@ -921,7 +960,7 @@ uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
     if (inodes[handle].indirect == 0) { // indirect blk allocation needed
       fs_blknum = DfsAllocateBlock();
       inodes[handle].indirect = fs_blknum;
-      // printf("DfsInodeAllocateVirtualBlock (%d): INFO - inodes[%d].indirect is allocated to fsblock %d.\n", GetCurrentPid(), handle, inodes[handle].indirect);
+      printf("DfsInodeAllocateVirtualBlock (%d): INFO - inodes[%d].indirect is allocated to fsblock %d.\n", GetCurrentPid(), handle, inodes[handle].indirect);
       bzero(fsblk_lvl1.data, sb.fs_blk_size);
     } else {
       DfsReadBlock(inodes[handle].indirect, &fsblk_lvl1);
@@ -941,6 +980,7 @@ uint32 DfsInodeAllocateVirtualBlock(uint32 handle, uint32 virtual_blocknum) {
     if (inodes[handle].double_indirect == 0) { // double indirect lvl1 blk allocation needed
       fs_blknum = DfsAllocateBlock();
       inodes[handle].double_indirect = fs_blknum;
+      printf("DfsInodeAllocateVirtualBlock (%d): INFO - inodes[%d].double_indirect is allocated to fsblock %d.\n", GetCurrentPid(), handle, inodes[handle].double_indirect);
       bzero(fsblk_lvl1.data, sb.fs_blk_size);
     } else {
       DfsReadBlock(inodes[handle].double_indirect, &fsblk_lvl1);

@@ -1,7 +1,7 @@
 #include "usertraps.h"
 #include "fileio.h"
 
-#define NUM_BYTES 20
+#define NUM_BYTES 4000
 #define START_OFS 300
 
 void main (int argc, char *argv[])

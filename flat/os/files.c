@@ -51,6 +51,7 @@ uint32 FileOpen(char *filename, char *mode) {
   // 1. inode-related check
   inode_handle = DfsInodeFilenameExists(filename);
   if (inode_handle != DFS_FAIL) { // file exists
+    printf("FileOpen (%d): INFO - file %s exists!\n", GetCurrentPid(), filename);
     for (i = 0; i < FILE_MAX_OPEN_FILES; i++) { // check whether this inode is used by other fd
       LockHandleAcquire(fd_lock);
       if ((fd[i].inuse == 1) && (fd[i].inode_handle == inode_handle)) {
@@ -68,8 +69,10 @@ uint32 FileOpen(char *filename, char *mode) {
     }
     
   } else { // file does NOT exist
+    printf("FileOpen (%d): INFO - new file %s is created!\n", GetCurrentPid(), filename);
+    
     if (mode[0] == 'r') {
-      printf("FileOpen (%d): ERROR - File %s does not exist!\n", GetCurrentPid(), filename);
+      printf("FileOpen (%d): ERROR - File %s does not exist but read mode is selected!\n", GetCurrentPid(), filename);
       return FILE_FAIL;
     }
 
