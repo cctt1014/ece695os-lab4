@@ -170,7 +170,7 @@ int FileRead(uint32 handle, void *mem, int num_bytes) {
   LockHandleAcquire(fd_lock);
   fd[handle].curr_pos = curr_pos + total_bytes_read;
   fd[handle].eof = eof;
-  printf("FileRead (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
+  // printf("FileRead (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
   LockHandleRelease(fd_lock);
 
   return total_bytes_read;
@@ -215,7 +215,7 @@ int FileWrite(uint32 handle, void *mem, int num_bytes) {
   // Shift current position
   LockHandleAcquire(fd_lock);
   fd[handle].curr_pos = curr_pos + total_bytes_written;
-  printf("FileWrite (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
+  // printf("FileWrite (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
   LockHandleRelease(fd_lock);
 
   return total_bytes_written;
@@ -243,7 +243,7 @@ int FileSeek(uint32 handle, int num_bytes, int from_where) {
 
   fd[handle].eof = 0;
 
-  printf("FileSeek (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
+  // printf("FileSeek (%d): DBG - Current fd%d is at position %d.\n", GetCurrentPid(), handle, fd[handle].curr_pos);
   LockHandleRelease(fd_lock);
   return FILE_SUCCESS;
 }

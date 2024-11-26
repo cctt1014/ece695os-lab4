@@ -5,43 +5,21 @@ Note that clean and build need to be run in /tmp due to the bug mentioned in lab
 make clean
 ```
 
-## To build:
+## To build and run:
 ```shell
 make <target>
 ```
 
-\<target\> should be replaced by the target you would like to build. Here is the list of target available:
-* one
-* two
-* fork
+\<target\> should be replaced by the target you would like to build and run. Here is the list of target available:
+* fdisk -- format disk
+* ostests -- run os tests to verify Inode APIs at OS level
+* fileio -- run user level tests to verify File APIs
 
-For instance, when we would like to build fork:
+For instance, when we would like to build and run ostests:
 ```shell
-make fork
+make ostests
 ```
 
-
-
-## To run the test program:
-### Run with fork built
-
-Run with default input values:
-```shell
-make run_fork
-```
-Input arguments TEST_IDX is used to select the test. For instance, if you would like to run fork test in part 5:
-```shell
-make run_fork TEST_IDX=6
-```
-
-TEST_IDX options: 
-* 0: Hello World
-* 1: Beyond max virtual address
-* 2: Beyond allocated pages
-* 3: Grow user stack to more than 1 page
-* 4: Create 100 processes sequentially to print Hello World
-* 5: Spawn 30 processes to run in parallel
-* 6: Fork test for part 5 (for fork built ONLY)
 
 
 # Potential Issues
@@ -51,11 +29,16 @@ TEST_IDX options:
     make: *** [run] Error 1
 ```
 
-2. The "Usage" error below usually shows up when there is a input argument mismatch. To get rid of this error, ensure that "make clean" is run before building and running a new target.
-```shell
-    Usage: makeprocs.dlx.obj <number of processes to create>
-    No runnable processes - exiting!
-```
+# Files Modified for Each Questions
+The file list may not be accurate enough, for details please check out the .git folder.
+1. Q1:
+    1. flat/apps/fdisk/fdisk/fdisk.c
+    2. flat/apps/fdisk/include/fdisk.h
+    3. flat/include/dfs_shared.h
+    4. flat/include/os/disk.h
+    5. flat/os/dfs.c
+
+
 
 # References
 1. https://github.com/ckv123/Operating-System/tree/master/lab5
