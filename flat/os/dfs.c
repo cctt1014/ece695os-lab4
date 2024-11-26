@@ -729,6 +729,9 @@ int DfsInodeDelete(uint32 handle) {
   }
   LockHandleRelease(inode_lock);
 
+  // Flush cache to ensure those freed blocks are removed from buffer cache
+  DfsCacheFlush();
+
   return DFS_SUCCESS;
 
 }
